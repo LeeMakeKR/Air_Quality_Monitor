@@ -1,9 +1,18 @@
+/*하드웨어 spec
+esp-wroom-32 / 업로드시 ESP32 dev module 
+tft_st7735 1.44인치 LCD
+pms7003 미세먼지 센서
+mh-z19b co2 센서
+tgs2600 아날로그 가스 센서
+sht20 온습도 센서
+*/    
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
-#include <SHT2x.h>  //  SHT20 센서용 라이브러리
+#include <SHT2x.h>  //  SHT20 센서용 라이브러리 / SHT2X by Rob Tillaart
 
 // ------------------ LCD 핀 정의 ------------------
 #define TFT_CS   5    // Chip Select
