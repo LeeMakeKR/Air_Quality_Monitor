@@ -1,10 +1,20 @@
-/*하드웨어 spec
-esp-wroom-32 / 업로드시 ESP32 dev module 
-tft_st7735 1.44인치 LCD
+/*하드웨어 
+main controller : esp-wroom-32 / 업로드시 ESP32 dev module 
+display : tft_st7735 1.44인치 LCD
+원하는 센서 : 이산화탄소, 온도, 습도, 미세먼지, voc
+
+sensor :
 pms7003 미세먼지 센서
-mh-z19b co2 센서
-tgs2600 아날로그 가스 센서
+mh-z19b co2 센서 ->교체 
+tgs2600 아날로그 가스 센서 -> ENS160으로 교체 
 sht20 온습도 센서
+-sensirion 센서로 통합하는 게 좋을 듯 함
+SGP40	VOC 변화 감지 (습도센서 필요)	유지 가능 or SGP41/ENS160으로 확장 가능
+SPS30	미세먼지 정량 측정 (PM10까지)	매우 우수, 유지 추천
+SCD40	CO₂ 정량 측정 + 온습도 겸용	일반 실내 환경엔 충분, 유지 가능
+
+부저,LED로 경고 추가
+
 */    
 
 #include <Arduino.h>
