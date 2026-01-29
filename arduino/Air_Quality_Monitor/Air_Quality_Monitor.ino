@@ -7,18 +7,18 @@ main controller : NodeMCU v3 (ESP8266) / 업로드시 NodeMCU 1.0 (ESP-12E Modul
 3. E-Paper : EPD 2.9"/4.2" - SPI 통신
 
 측정 목표 센서 :
-1. 이산화탄소 (CO₂) - MH-Z19B 센서
+1. 이산화탄소 (CO₂) - SCD30 센서 (온습도 포함)
 2. 미세먼지 (PM1.0, PM2.5, PM10) - PMS 시리즈 (PMS5003/PMS7003)
-3. 온습도 - SHT20 또는 AHT20 센서  
-4. TVOC/eCO₂/AQI - ENS160 센서
+3. 온습도 - SHT20 또는 AHT20 센서 (선택사항)
+4. VOC - SGP40 센서
 
 현재 구현된 센서 :
 - PMS7003 미세먼지 센서 (Software Serial - NodeMCU 핀 제한 고려)
-- MH-Z19B CO₂ 센서 (Software Serial)
-- SHT20 온습도 센서 (I2C)
+- SCD30 CO₂/온습도 센서 (I2C) - CO₂, 온도, 습도 동시 측정
+- SHT20 온습도 센서 (I2C) - 선택사항 (SCD30으로 대체 가능)
 
 추가 예정 센서 :
-- ENS160 TVOC/공기질 센서 (I2C)
+- SGP40 VOC 센서 (I2C)
 - AHT20 온습도 센서 (SHT20 대체 옵션)
 
 주의사항:
@@ -42,6 +42,8 @@ main controller : NodeMCU v3 (ESP8266) / 업로드시 NodeMCU 1.0 (ESP-12E Modul
 
 #include <SoftwareSerial.h>  // NodeMCU v3용 Software Serial
 #include <SHT2x.h>  //  SHT20 센서용 라이브러리 / SHT2X by Rob Tillaart
+#include <SparkFun_SCD30_Arduino_Library.h>  // SCD30 센서용 라이브러리
+#include <Adafruit_SGP40.h>  // SGP40 센서용 라이브러리
 
 // ------------------ NodeMCU v3 핀 정의 (ESP8266) ------------------
 // 사용 가능한 GPIO: D0~D8 (일부 제한사항 있음)
@@ -65,10 +67,9 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 #define PMS_TX D7  // GPIO13 - 이 핀에서 -> PMS7003 RX로 나감 (MOSI와 공유시 주의)
 SoftwareSerial pmsSerial(PMS_RX, PMS_TX);
 
-// ------------------ MH-Z19B CO₂ 센서 핀 (Software Serial) ------------------
-#define CO2_RX D5  // GPIO14 - MH-Z19B TX -> 이 핀으로 들어옴 (SCK와 공유시 주의)
-#define CO2_TX D0  // GPIO16 - 이 핀에서 -> MH-Z19B RX로 나감
-SoftwareSerial co2Serial(CO2_RX, CO2_TX);
+// ------------------ SCD30 CO₂/온습도 센서 (I2C) ------------------
+// I2C 핀: D1 (GPIO5 - SCL), D2 (GPIO4 - SDA)
+// SCD30은 CO₂, 온도, 습도를 동시에 측정
 
 // ------------------ CO₂ 보정 버튼 핀 ------------------
 #define CALIBRATION_BTN_PIN A0  // ADC0 - 아날로그 입력으로 변경
@@ -99,13 +100,19 @@ int prev_pm1_0 = -1, prev_pm2_5 = -1, prev_pm10 = -1, prev_co2 = -1;
 float prev_temp = -99.0, prev_humidity = -99.0;
 
 // ------------------ SHT20 온습도 센서 ------------------
-SHT2x sht20;  //  SHT20 센서 객체 생성
+SHT2x sht20;  //  SHT20 센서 객체 생성 (선택사항 - SCD30으로 대체 가능)
+
+// ------------------ SCD30 CO₂/온습도 센서 ------------------
+SCD30 airSensor;  // SCD30 센서 객체 생성
+
+// ------------------ SGP40 VOC 센서 ------------------
+Adafruit_SGP40 sgp40;  // SGP40 센서 객체 생성
 
 // ------------------ 안정화 타이머 ------------------
 const unsigned long PMS_STABILIZE_TIME = 30000;  // 30초 (30,000ms)
-const unsigned long CO2_STABILIZE_TIME = 180000; // 3분 (180,000ms)
+const unsigned long CO2_STABILIZE_TIME = 120000; // 2분 (120,000ms) - SCD30은 MH-Z19B보다 빠름
 const unsigned long SHT20_STABILIZE_TIME = 30000; // 30초 (30,000ms)
-//const unsigned long TGS2600_STABILIZE_TIME = 0; //일주일 걸림..
+const unsigned long SGP40_STABILIZE_TIME = 10000; // 10초 (10,000ms)
 // 부팅 시간 기록 변수 추가
 unsigned long bootTime;
 
@@ -113,9 +120,10 @@ unsigned long bootTime;
 bool pmsReady = false;
 bool co2Ready = false;
 bool sht20Ready = false;
+bool sgp40Ready = false;
 
 // ------------------ 센서 데이터 저장 변수 ------------------
-int pm1_0 = -1, pm2_5 = -1, pm10 = -1, co2 = -1;
+int pm1_0 = -1, pm2_5 = -1, pm10 = -1, co2 = -1, voc_index = -1;
 float temperature = -99.0, humidity = -99.0;
 
 // ------------------ 공기질 임계값 정의 ------------------
@@ -163,19 +171,24 @@ void readPMData() {
   }
 }
 
-// ------------------ CO₂ 데이터 읽기 함수 ------------------
+// ------------------ CO₂ 데이터 읽기 함수 (SCD30) ------------------
 void readCO2Data() {
-  uint8_t cmd_get_co2[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
-  uint8_t response[9];
+  if (airSensor.dataAvailable()) {
+    co2 = airSensor.getCO2();
+    
+    // SCD30은 온습도도 함께 제공 (SHT20 대신 사용 가능)
+    // temperature = airSensor.getTemperature();
+    // humidity = airSensor.getHumidity();
+  }
+}
 
-  co2Serial.write(cmd_get_co2, 9);  // 명령 전송
-  delay(100);
-
-  if (co2Serial.available() >= 9) {
-    co2Serial.readBytes(response, 9);
-    if (response[0] == 0xFF && response[1] == 0x86) {
-      co2 = (response[2] << 8) + response[3]; // HIGH * 256 + LOW
-    }
+// ------------------ SGP40 VOC 데이터 읽기 함수 ------------------
+void readVOCData() {
+  // SGP40은 온습도 보정을 사용하면 더 정확함
+  if (temperature > -99.0 && humidity > -99.0) {
+    voc_index = sgp40.measureVocIndex(temperature, humidity);
+  } else {
+    voc_index = sgp40.measureVocIndex();
   }
 }
 
@@ -288,10 +301,28 @@ void setup() {
   analogWrite(RGB_LED_G, 0);
   analogWrite(RGB_LED_B, 0);
 
-  // PMS7003 & CO2 센서 Software Serial 초기화 (NodeMCU v3용)
+  // PMS7003 센서 Software Serial 초기화 (NodeMCU v3용)
   pmsSerial.begin(9600);
-  co2Serial.begin(9600);
   wakeUpPMS7003();
+  
+  // I2C 통신 초기화 (SCD30, SGP40, SHT20) - NodeMCU v3: SDA=D2, SCL=D1
+  Wire.begin(D2, D1);  // SDA, SCL 핀 명시적 지정
+  
+  // SCD30 센서 초기화
+  if (airSensor.begin() == false) {
+    Serial.println("SCD30 센서를 찾을 수 없습니다. 연결을 확인하세요.");
+  } else {
+    Serial.println("SCD30 센서 초기화 완료");
+    airSensor.setMeasurementInterval(2); // 2초마다 측정
+    airSensor.setAutoSelfCalibration(true); // 자동 보정 활성화
+  }
+  
+  // SGP40 센서 초기화
+  if (!sgp40.begin()) {
+    Serial.println("SGP40 센서를 찾을 수 없습니다. 연결을 확인하세요.");
+  } else {
+    Serial.println("SGP40 센서 초기화 완료");
+  }
 
   // TFT LCD 초기화
   tft.initR(INITR_BLACKTAB);
@@ -300,8 +331,7 @@ void setup() {
   tft.setTextWrap(false);
   tft.setTextSize(1);
 
-  // I2C 통신 초기화 (SHT20) - NodeMCU v3: SDA=D2, SCL=D1
-  Wire.begin(D2, D1);  // SDA, SCL 핀 명시적 지정
+  // SHT20 센서 초기화 (선택사항 - SCD30으로 대체 가능)
   sht20.begin();  // SHT20 센서 초기화
 
   // 부팅 시간 기록
@@ -338,12 +368,16 @@ void loop() {
   if (!sht20Ready && (currentTime - bootTime >= SHT20_STABILIZE_TIME)) {
     sht20Ready = true;
   }
+  if (!sgp40Ready && (currentTime - bootTime >= SGP40_STABILIZE_TIME)) {
+    sgp40Ready = true;
+  }
 
   if (currentTime - lastUpdateTime >= UPDATE_INTERVAL) {
     // 센서 데이터 읽기
     if (pmsReady) readPMData();
     if (co2Ready) readCO2Data();
     if (sht20Ready) readTempHumidity();
+    if (sgp40Ready) readVOCData();
     
     // 공기질 평가 및 하드웨어 제어
     if (pmsReady && co2Ready && sht20Ready) {
@@ -445,15 +479,17 @@ void loop() {
 
 }
 
-// 보정 함수 구현
+// 보정 함수 구현 (SCD30용)
 void calibrateCO2Sensor() {
     if (!isCalibrating) {
-        // 보정 시작 시 명령어 전송
-        byte calibrationCommand[] = {0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78};
-        co2Serial.write(calibrationCommand, 9);
+        // SCD30 강제 보정 (400ppm으로 설정)
+        // 실외 신선한 공기에서 실행해야 함
+        airSensor.setForcedRecalibrationFactor(400);
         
         isCalibrating = true;
         calibrationStartTime = millis();
+        
+        Serial.println("SCD30 강제 보정 시작 (400ppm)");
         return;
     }
 

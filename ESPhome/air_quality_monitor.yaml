@@ -23,10 +23,10 @@
 #   +-----+-----+----------+----------+
 #
 # 센서 연결:
-# - CO2 센서 (MH-Z19B): UART (D0=TX, D5=RX)
+# - CO2/온습도 (SCD30): I2C (D1=SCL, D2=SDA) - CO₂, 온도, 습도 동시 측정
 # - 미세먼지 (PMS7003): UART (D7=TX, D6=RX)  
-# - 온습도 (SHT20): I2C (D1=SCL, D2=SDA)
-# - TVOC (ENS160): I2C (D1=SCL, D2=SDA)
+# - VOC (SGP40): I2C (D1=SCL, D2=SDA)
+# - 온습도 (SHT20): I2C (D1=SCL, D2=SDA) - 선택사항 (SCD30으로 대체 가능)
 # - TFT LCD: SPI (D8=CS, D4=DC, D3=RST, D7=MOSI, D5=SCK)
 # - RGB LED: PWM (D9=R, D10=G, D0=B)
 # - 제어 출력: GPIO (D1=OUT1, D2=OUT2, D6=OUT3)
@@ -38,10 +38,10 @@
 # - I2C와 제어 출력이 핀을 공유하므로 신중한 설계 필요
 #
 # ESPHome 센서 지원 상태:
-# ✅ MH-Z19B (CO₂): 완벽 지원 - 'mhz19' 플랫폼
+# ✅ SCD30 (CO₂/온습도): 완벽 지원 - 'scd30' 플랫폼
 # ✅ PMS7003 (미세먼지): 완벽 지원 - 'pmsx003' 플랫폼  
-# ✅ SHT20 (온습도): HTU21D 호환 지원 - 'htu21d' 플랫폼
-# ⚠️ ENS160 (TVOC): ESPHome 2023.12+ 지원 - 이전 버전에서 문제 가능
+# ✅ SGP40 (VOC): 완벽 지원 - 'sgp40' 플랫폼
+# ✅ SHT20 (온습도): HTU21D 호환 지원 - 'htu21d' 플랫폼 (선택사항)
 # =============================================================================
 
 esphome:
@@ -77,20 +77,15 @@ ota:
 logger:
   level: INFO
 
-# I2C 버스 설정 (온습도, TVOC 센서용) - 테스트용 주석처리
-# i2c:
-#   sda: D2  # GPIO4
-#   scl: D1  # GPIO5
-#   scan: true
+# I2C 버스 설정 (SCD30, SGP40, 온습도 센서용)
+i2c:
+  sda: D2  # GPIO4
+  scl: D1  # GPIO5
+  scan: true
 
-# UART 설정 (CO2, 미세먼지 센서용)
+# UART 설정 (미세먼지 센서용)
 uart:
-  # CO2 센서용 UART - 테스트용 주석처리
-  # - id: uart_co2
-  #   tx_pin: D0  # GPIO16
-  #   rx_pin: D5  # GPIO14
-  #   baud_rate: 9600
-    
+  # PMS7003 미세먼지 센서용 UART
   - id: uart_pms
     tx_pin: D7  # GPIO13  
     rx_pin: D6  # GPIO12
@@ -107,41 +102,52 @@ sensor:
   - platform: uptime
     name: "Uptime"
     
-  # SHT20 온습도 센서 (HTU21D 호환) - 테스트용 주석처리
+  # SHT20 온습도 센서 (HTU21D 호환) - 선택사항 (SCD30이 온습도도 제공)
   # - platform: htu21d
   #   temperature:
-  #     name: "Temperature"
-  #     id: temp_sensor
+  #     name: "Temperature (SHT20)"
+  #     id: temp_sensor_sht20
   #     unit_of_measurement: "°C"
   #     accuracy_decimals: 1
   #     filters:
   #       - filter_out: nan
   #   humidity:
-  #     name: "Humidity" 
-  #     id: humidity_sensor
+  #     name: "Humidity (SHT20)" 
+  #     id: humidity_sensor_sht20
   #     unit_of_measurement: "%"
   #     accuracy_decimals: 1
   #     filters:
   #       - filter_out: nan
   #   update_interval: 10s
 
-  # MH-Z19B CO2 센서 - 테스트용 주석처리
-  # - platform: mhz19
-  #   uart_id: uart_co2
-  #   co2:
-  #     name: "CO2"
-  #     id: co2_sensor
-  #     unit_of_measurement: "ppm"
-  #     accuracy_decimals: 0
-  #     filters:
-  #       - filter_out: nan
-  #       - clamp:
-  #           min_value: 400
-  #           max_value: 5000
-  #   temperature:
-  #     name: "CO2 Sensor Temperature"
-  #   update_interval: 10s
-  #   automatic_baseline_calibration: false
+  # SCD30 CO2/온습도 센서 (I2C)
+  - platform: scd30
+    co2:
+      name: "CO2"
+      id: co2_sensor
+      accuracy_decimals: 0
+      filters:
+        - filter_out: nan
+        - clamp:
+            min_value: 400
+            max_value: 40000
+    temperature:
+      name: "Temperature"
+      id: temp_sensor
+      accuracy_decimals: 1
+      filters:
+        - filter_out: nan
+    humidity:
+      name: "Humidity"
+      id: humidity_sensor
+      accuracy_decimals: 1
+      filters:
+        - filter_out: nan
+    automatic_self_calibration: true
+    ambient_pressure_compensation: 1013  # mBar (해당 지역 대기압으로 조정)
+    altitude_compensation: 0  # 미터 (해당 지역 고도로 조정)
+    temperature_offset: 0.0  # °C (온도 보정값)
+    update_interval: 10s
 
   # PMS7003 미세먼지 센서  
   - platform: pmsx003
@@ -161,24 +167,23 @@ sensor:
       unit_of_measurement: "μg/m³"
     update_interval: 10s
 
-  # ENS160 TVOC 센서 (I2C) - 테스트용 주석처리
-  # - platform: ens160
-  #   i2c_id: i2c_bus
-  #   eco2:
-  #     name: "eCO2"
-  #     id: eco2_sensor
-  #     unit_of_measurement: "ppm"
-  #   tvoc:
-  #     name: "TVOC"
-  #     id: tvoc_sensor
-  #     unit_of_measurement: "ppb"
-  #   aqi:
-  #     name: "Air Quality Index"
-  #     id: aqi_sensor
-  #   compensation:
-  #     temperature: temp_sensor
-  #     humidity: humidity_sensor
-  #   update_interval: 10s
+  # SGP40 VOC 센서 (I2C)
+  - platform: sgp4x
+    voc:
+      name: "VOC Index"
+      id: voc_sensor
+      algorithm_tuning:
+        index_offset: 100
+        learning_time_offset_hours: 12
+        learning_time_gain_hours: 12
+        gating_max_duration_minutes: 180
+        std_initial: 50
+        gain_factor: 230
+    compensation:
+      temperature_source: temp_sensor
+      humidity_source: humidity_sensor
+    update_interval: 10s
+    store_baseline: true
 
   # 공기질 종합 점수 (템플릿 센서) - 테스트용 주석처리
   # - platform: template
@@ -206,7 +211,7 @@ sensor:
 
 # 바이너리 센서 (버튼)
 binary_sensor:
-  # CO2 보정 버튼
+  # CO2 보정 버튼 (SCD30은 자동 보정 기능이 있어 수동 보정이 덜 필요함)
   - platform: analog_threshold
     sensor_id: calibration_btn_analog
     name: "CO2 Calibration Button"
@@ -218,10 +223,10 @@ binary_sensor:
           condition:
             binary_sensor.is_on: calibration_button
           then:
-            - logger.log: "CO2 센서 보정 시작"
-            - uart.write:
-                id: uart_co2
-                data: [0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78]
+            - logger.log: "SCD30 강제 보정 실행 (400ppm)"
+            # SCD30 강제 보정 (Forced Recalibration)
+            - lambda: |-
+                id(co2_sensor).set_forced_recalibration_factor(400);
 
 # 아날로그 센서 (보정 버튼용)
 sensor:
